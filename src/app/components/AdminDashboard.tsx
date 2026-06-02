@@ -1989,6 +1989,49 @@ export default function AdminDashboard() {
             </div>
 
             <div className="bg-white rounded-lg shadow-sm p-6">
+              <details className="mb-6">
+                <summary className="text-sm font-semibold text-gray-700 cursor-pointer hover:text-indigo-600 select-none">
+                  Developer Settings
+                </summary>
+                <div className="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                  <p className="text-xs text-gray-500 mb-3">
+                    These settings are shared system-wide. Set your Google Maps API key here for business discovery.
+                  </p>
+                  <div className="flex items-end gap-3">
+                    <div className="flex-1">
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Google Maps API Key</label>
+                      <input
+                        type="password"
+                        value={settings.googleMapsApiKey}
+                        onChange={(e) => setSettings({ ...settings, googleMapsApiKey: e.target.value })}
+                        placeholder="AIza..."
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent font-mono text-sm"
+                      />
+                    </div>
+                    <button
+                      onClick={async () => {
+                        localStorage.setItem('vendlocate_outreach_settings', JSON.stringify(settings));
+                        try {
+                          await apiCall('/outreach-settings', {
+                            method: 'POST',
+                            body: JSON.stringify({ googleMapsApiKey: settings.googleMapsApiKey }),
+                          });
+                          setSettingsStatus('API key saved to account.');
+                        } catch {
+                          setSettingsStatus('API key saved locally.');
+                        }
+                      }}
+                      className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-semibold hover:bg-indigo-700 transition-colors whitespace-nowrap"
+                    >
+                      Save Key
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-2">
+                    Get a key at <a href="https://console.cloud.google.com" target="_blank" className="underline">console.cloud.google.com</a> — enable Places API.
+                  </p>
+                </div>
+              </details>
+
               <h2 className="text-2xl font-bold text-gray-900 mb-1">Upload CSV</h2>
               <p className="text-gray-600 mb-4">
                 Upload a CSV file of leads to import them into your dashboard and Supabase. The CSV should have columns like: name, email, phone, business_type, city, state, address, website.
