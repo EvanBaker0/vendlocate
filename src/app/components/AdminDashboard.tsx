@@ -784,53 +784,85 @@ export default function AdminDashboard() {
       addTerminalLine('Querying OpenStreetMap for businesses...');
       const seenOsmIds = new Set<string>();
       const radiusMeters = currentRadiusMiles * 1609.34;
+      const osmCategoryQueries: Record<string, string[]> = {
+        laundromat: ['["shop"="laundry"]', '["shop"="dry_cleaning"]', '["amenity"="laundry"]'],
+        auto: ['["shop"="car_repair"]', '["shop"="tyres"]', '["shop"="car_parts"]', '["shop"="car"]', '["amenity"="auto_repair"]'],
+        apartment: ['["building"="apartments"]', '["building"="residential"]', '["building"="dormitory"]'],
+        hotel: ['["tourism"="hotel"]', '["tourism"="motel"]', '["tourism"="hostel"]', '["tourism"="guest_house"]'],
+        senior: ['["amenity"="retirement_home"]', '["amenity"="nursing_home"]', '["social_facility"="senior"]'],
+        hospital: ['["amenity"="hospital"]'],
+        urgent: ['["amenity"="clinic"]', '["amenity"="urgent_care"]', '["healthcare"="clinic"]', '["healthcare"="doctor"]'],
+        pet: ['["amenity"="veterinary"]', '["shop"="pet"]'],
+        gym: ['["leisure"="fitness_centre"]', '["leisure"="gym"]', '["sport"="fitness"]'],
+        warehouse: ['["building"="warehouse"]', '["industrial"="warehouse"]'],
+      };
+
+      function getOSMQueriesForKeywords(keywords: string[], btName: string): string[] {
+        const queries: string[] = [];
+        const namePattern = keywords.map(k => `.*${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*`).join('|');
+        if (namePattern) {
+          queries.push(`[out:json][maxsize:1048576];(node(around:${radiusMeters},${lat},${lng})[~"^name$"~"${namePattern}",i];way(around:${radiusMeters},${lat},${lng})[~"^name$"~"${namePattern}",i];);out center 300;`);
+        }
+        const nameLower = btName.toLowerCase();
+        for (const [category, tagFilters] of Object.entries(osmCategoryQueries)) {
+          if (nameLower.includes(category) || category.split('_').some(p => nameLower.includes(p))) {
+            for (const tf of tagFilters) {
+              queries.push(`[out:json][maxsize:1048576];(node(around:${radiusMeters},${lat},${lng})${tf};way(around:${radiusMeters},${lat},${lng})${tf};);out center 200;`);
+            }
+          }
+        }
+        return queries;
+      }
+
       for (const bt of enabledTypes) {
         if (discoveredPlaces.length >= 800) break;
         const elKeywords = [...(bt.requiredKeywords || []), ...(bt.optionalKeywords || [])];
         addTerminalLine(`  Searching OSM for "${bt.name}"...`);
-        try {
-          const namePattern = elKeywords.map(k => `.*${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*`).join('|');
-          const query = `[out:json][maxsize:1048576];(node(around:${radiusMeters},${lat},${lng})[~"^name$"~"${namePattern}",i];way(around:${radiusMeters},${lat},${lng})[~"^name$"~"${namePattern}",i];);out center 50;`;
-          const resp = await fetch('https://overpass-api.de/api/interpreter', {
-            method: 'POST',
-            body: query,
-            headers: { 'Content-Type': 'text/plain' },
-          });
-          const data = await resp.json();
-          for (const el of data.elements || []) {
-            if (discoveredPlaces.length >= 800) break;
-            const id = `${el.type}/${el.id}`;
-            if (seenOsmIds.has(id)) continue;
-            seenOsmIds.add(id);
-            const elLat = el.lat || el.center?.lat || lat;
-            const elLng = el.lon || el.center?.lon || lng;
-            const name = el.tags?.name || el.tags?.['operator'] || 'Unknown';
-            const nameLower = name.toLowerCase();
-            const matchesKeyword = elKeywords.length === 0 || elKeywords.some(k => nameLower.includes(k.toLowerCase()));
-            if (!matchesKeyword) continue;
-            const R = 3959;
-            const dLat = (lat - elLat) * Math.PI / 180;
-            const dLng = (lng - elLng) * Math.PI / 180;
-            const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat * Math.PI / 180) * Math.cos(elLat * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
-            const dist = parseFloat((R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))).toFixed(1));
-            discoveredPlaces.push({
-              business_name: name,
-              business_type: bt.name || 'General',
-              address: [el.tags?.['addr:housenumber'] || '', el.tags?.['addr:street'] || '', el.tags?.['addr:city'] || '', el.tags?.['addr:postcode'] || ''].filter(Boolean).join(', ') || `${elLat.toFixed(4)}, ${elLng.toFixed(4)}`,
-              city: editLocation.city || '',
-              state: editLocation.state || '',
-              website: el.tags?.website || el.tags?.contactwebsite || null,
-              phone: el.tags?.phone || el.tags?.['contact:phone'] || null,
-              place_id: `osm_${id}`,
-              lat: elLat,
-              lng: elLng,
-              distance: dist,
+        const queries = getOSMQueriesForKeywords(elKeywords, bt.name);
+        for (const query of queries) {
+          if (discoveredPlaces.length >= 800) break;
+          try {
+            const resp = await fetch('https://overpass-api.de/api/interpreter', {
+              method: 'POST',
+              body: query,
+              headers: { 'Content-Type': 'text/plain' },
             });
+            const data = await resp.json();
+            for (const el of data.elements || []) {
+              if (discoveredPlaces.length >= 800) break;
+              const id = `${el.type}/${el.id}`;
+              if (seenOsmIds.has(id)) continue;
+              seenOsmIds.add(id);
+              const elLat = el.lat || el.center?.lat || lat;
+              const elLng = el.lon || el.center?.lon || lng;
+              const name = el.tags?.name || el.tags?.['operator'] || 'Unknown';
+              const nameLower = name.toLowerCase();
+              const matchesKeyword = elKeywords.length === 0 || elKeywords.some(k => nameLower.includes(k.toLowerCase()));
+              if (!matchesKeyword) continue;
+              const R = 3959;
+              const dLat = (lat - elLat) * Math.PI / 180;
+              const dLng = (lng - elLng) * Math.PI / 180;
+              const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat * Math.PI / 180) * Math.cos(elLat * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+              const dist = parseFloat((R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))).toFixed(1));
+              discoveredPlaces.push({
+                business_name: name,
+                business_type: bt.name || 'General',
+                address: [el.tags?.['addr:housenumber'] || '', el.tags?.['addr:street'] || '', el.tags?.['addr:city'] || '', el.tags?.['addr:postcode'] || ''].filter(Boolean).join(', ') || `${elLat.toFixed(4)}, ${elLng.toFixed(4)}`,
+                city: editLocation.city || '',
+                state: editLocation.state || '',
+                website: el.tags?.website || el.tags?.contactwebsite || null,
+                phone: el.tags?.phone || el.tags?.['contact:phone'] || null,
+                place_id: `osm_${id}`,
+                lat: elLat,
+                lng: elLng,
+                distance: dist,
+              });
+            }
+          } catch {
+            // skip failed query
           }
-        } catch {
-          addTerminalLine(`  ⚠ OSM search error for "${bt.name}"`);
+          await delay(600);
         }
-        await delay(500);
       }
       addTerminalLine(`Total businesses discovered from OpenStreetMap: ${discoveredPlaces.length}`);
     }
