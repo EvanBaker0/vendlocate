@@ -188,9 +188,13 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     const loadDashboard = async () => {
-      const {
-        data: { user: supabaseUser },
-      } = await supabase.auth.getUser();
+      let supabaseUser = null;
+      try {
+        const result = await supabase.auth.getUser();
+        supabaseUser = result.data?.user || null;
+      } catch {
+        // Supabase Auth unavailable — use local user only
+      }
       const currentUser = localStorage.getItem('vendlocate_current_user');
       const user = supabaseUser || (currentUser ? JSON.parse(currentUser) : null);
       setIsAuthenticated(!!user);
