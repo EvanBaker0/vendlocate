@@ -781,53 +781,56 @@ export default function AdminDashboard() {
       addTerminalLine(`Total businesses discovered from Google: ${discoveredPlaces.length}`);
     } else {
       addTerminalLine('No Google Maps API key configured. Using free OpenStreetMap data (fewer websites).');
-      // Overpass API browser search fallback
       addTerminalLine('Querying OpenStreetMap for businesses...');
-      const radiusDeg = currentRadiusMiles / 69;
-      const bbox = `${lng - radiusDeg},${lat - radiusDeg},${lng + radiusDeg},${lat + radiusDeg}`;
       const seenOsmIds = new Set<string>();
+      const radiusMeters = currentRadiusMiles * 1609.34;
       for (const bt of enabledTypes) {
-        const tags = ['shop', 'amenity', 'office', 'leisure', 'building'];
-        for (const tag of tags) {
-          if (discoveredPlaces.length >= 800) break;
-          try {
-            const query = `[out:json];(node["${tag}"](around:${currentRadiusMiles * 1609.34},${lat},${lng});way["${tag}"](around:${currentRadiusMiles * 1609.34},${lat},${lng}););out center ${Math.min(50, 800 - discoveredPlaces.length)};`;
-            const resp = await fetch('https://overpass-api.de/api/interpreter', {
-              method: 'POST',
-              body: query,
+        if (discoveredPlaces.length >= 800) break;
+        const elKeywords = [...(bt.requiredKeywords || []), ...(bt.optionalKeywords || [])];
+        addTerminalLine(`  Searching OSM for "${bt.name}"...`);
+        try {
+          const namePattern = elKeywords.map(k => `.*${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*`).join('|');
+          const query = `[out:json][maxsize:1048576];(node(around:${radiusMeters},${lat},${lng})[~"^name$"~"${namePattern}",i];way(around:${radiusMeters},${lat},${lng})[~"^name$"~"${namePattern}",i];);out center 50;`;
+          const resp = await fetch('https://overpass-api.de/api/interpreter', {
+            method: 'POST',
+            body: query,
+            headers: { 'Content-Type': 'text/plain' },
+          });
+          const data = await resp.json();
+          for (const el of data.elements || []) {
+            if (discoveredPlaces.length >= 800) break;
+            const id = `${el.type}/${el.id}`;
+            if (seenOsmIds.has(id)) continue;
+            seenOsmIds.add(id);
+            const elLat = el.lat || el.center?.lat || lat;
+            const elLng = el.lon || el.center?.lon || lng;
+            const name = el.tags?.name || el.tags?.['operator'] || 'Unknown';
+            const nameLower = name.toLowerCase();
+            const matchesKeyword = elKeywords.length === 0 || elKeywords.some(k => nameLower.includes(k.toLowerCase()));
+            if (!matchesKeyword) continue;
+            const R = 3959;
+            const dLat = (lat - elLat) * Math.PI / 180;
+            const dLng = (lng - elLng) * Math.PI / 180;
+            const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat * Math.PI / 180) * Math.cos(elLat * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+            const dist = parseFloat((R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))).toFixed(1));
+            discoveredPlaces.push({
+              business_name: name,
+              business_type: bt.name || 'General',
+              address: [el.tags?.['addr:housenumber'] || '', el.tags?.['addr:street'] || '', el.tags?.['addr:city'] || '', el.tags?.['addr:postcode'] || ''].filter(Boolean).join(', ') || `${elLat.toFixed(4)}, ${elLng.toFixed(4)}`,
+              city: editLocation.city || '',
+              state: editLocation.state || '',
+              website: el.tags?.website || el.tags?.contactwebsite || null,
+              phone: el.tags?.phone || el.tags?.['contact:phone'] || null,
+              place_id: `osm_${id}`,
+              lat: elLat,
+              lng: elLng,
+              distance: dist,
             });
-            const data = await resp.json();
-            for (const el of data.elements || []) {
-              if (discoveredPlaces.length >= 800) break;
-              const id = `${el.type}/${el.id}`;
-              if (seenOsmIds.has(id)) continue;
-              seenOsmIds.add(id);
-              const elLat = el.lat || el.center?.lat || lat;
-              const elLng = el.lon || el.center?.lon || lng;
-              const name = el.tags?.name || el.tags?.['operator'] || 'Unknown';
-              const elKeywords = [...(bt.requiredKeywords || []), ...(bt.optionalKeywords || [])];
-              const nameLower = name.toLowerCase();
-              const matchesKeyword = elKeywords.length === 0 || elKeywords.some(k => nameLower.includes(k.toLowerCase()));
-              if (!matchesKeyword) continue;
-              discoveredPlaces.push({
-                business_name: name,
-                business_type: bt.name || 'General',
-                address: [el.tags?.['addr:housenumber'] || '', el.tags?.['addr:street'] || '', el.tags?.['addr:city'] || '', el.tags?.['addr:postcode'] || ''].filter(Boolean).join(', ') || `${elLat.toFixed(4)}, ${elLng.toFixed(4)}`,
-                city: editLocation.city || '',
-                state: editLocation.state || '',
-                website: el.tags?.website || el.tags?.contactwebsite || null,
-                phone: el.tags?.phone || el.tags?.['contact:phone'] || null,
-                place_id: `osm_${id}`,
-                lat: elLat,
-                lng: elLng,
-                distance: parseFloat((currentRadiusMiles * Math.sqrt(((elLng - lng) * Math.cos((lat + elLat) / 2 * Math.PI / 180)) ** 2 + (elLat - lat) ** 2) / radiusDeg).toFixed(1)),
-              });
-            }
-          } catch {
-            addTerminalLine(`  ⚠ OSM search error for tag "${tag}"`);
           }
+        } catch {
+          addTerminalLine(`  ⚠ OSM search error for "${bt.name}"`);
         }
-        await delay(100);
+        await delay(500);
       }
       addTerminalLine(`Total businesses discovered from OpenStreetMap: ${discoveredPlaces.length}`);
     }
@@ -935,13 +938,23 @@ export default function AdminDashboard() {
 
   // Save discovered places directly to Supabase when Edge Function is unavailable
   const saveDiscoveredPlacesDirectly = async (places: any[]) => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+    let localUserId: string | null = null;
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      localUserId = user?.id || null;
+    } catch {}
+    if (!localUserId) {
+      try {
+        const raw = localStorage.getItem('vendlocate_current_user');
+        if (raw) localUserId = JSON.parse(raw)?.id || null;
+      } catch {}
+    }
+    if (!localUserId) return;
 
     const { data: purchase } = await supabase
       .from('purchases')
       .select('id')
-      .eq('user_id', user.id)
+      .eq('user_id', localUserId)
       .eq('status', 'active')
       .order('purchase_date', { ascending: false })
       .limit(1)
@@ -952,14 +965,14 @@ export default function AdminDashboard() {
     const { data: loc } = await supabase
       .from('user_locations')
       .select('id')
-      .eq('user_id', user.id)
+      .eq('user_id', localUserId)
       .eq('is_primary', true)
       .limit(1)
       .maybeSingle();
 
     const leadRows = places.map((p: any) => ({
       purchase_id: purchase.id,
-      user_id: user.id,
+      user_id: localUserId,
       user_location_id: loc?.id || null,
       business_name: p.business_name || p.name || 'Unknown',
       business_type: p.business_type || 'General',
