@@ -113,6 +113,8 @@ export default function AdminDashboard() {
   const [runStatus, setRunStatus] = useState('');
   const [terminalLines, setTerminalLines] = useState<string[]>([]);
   const [showTerminal, setShowTerminal] = useState(false);
+  const [purchaseInfo, setPurchaseInfo] = useState<{extraSelections: number; premiumTypes: string[]}>({extraSelections: 0, premiumTypes: []});
+  const maxSelections = 5 + purchaseInfo.extraSelections;
 
   // Editable location (can change until Run is clicked)
   const [editLocation, setEditLocation] = useState({
@@ -244,6 +246,10 @@ export default function AdminDashboard() {
       try {
         const response = await apiCall('/purchases');
         setHasPaid(!!localPurchase || (response.purchases || []).length > 0);
+        if (response.purchases && response.purchases.length > 0) {
+          const p = response.purchases[0];
+          setPurchaseInfo({extraSelections: p.extra_selections || 0, premiumTypes: p.premium_types || []});
+        }
       } catch {
         setHasPaid(!!localPurchase);
       }
@@ -450,7 +456,13 @@ export default function AdminDashboard() {
   };
 
   const updateBusinessType = (id: string, updates: Partial<BusinessType>) => {
-    setBusinessTypes(businessTypes.map((bt) => (bt.id === id ? { ...bt, ...updates } : bt)));
+    setBusinessTypes(businessTypes.map((bt) => {
+      if (bt.id === id && updates.enabled === true && !bt.enabled) {
+        const currentEnabled = businessTypes.filter(b => b.id !== id && b.enabled).length;
+        if (currentEnabled >= maxSelections) return bt;
+      }
+      return bt.id === id ? { ...bt, ...updates } : bt;
+    }));
   };
 
   const deleteBusinessType = (id: string) => {
@@ -471,7 +483,6 @@ export default function AdminDashboard() {
           smtpAppPassword: settings.smtpAppPassword,
           senderName: settings.senderName,
           emailTemplate: settings.emailTemplate,
-          googleMapsApiKey: settings.googleMapsApiKey,
         }),
       });
       setSettingsStatus('Settings saved to your account.');
@@ -755,8 +766,7 @@ export default function AdminDashboard() {
 
       addTerminalLine(`Total businesses discovered from Google: ${discoveredPlaces.length}`);
     } else {
-      addTerminalLine('No Google Maps API key set. Using free OpenStreetMap data (fewer websites).');
-      addTerminalLine('Set your API key in Settings > Outreach Settings for best results.');
+      addTerminalLine('No Google Maps API key configured. Using free OpenStreetMap data (fewer websites).');
     }
 
     // Send discovered places to engine for email scraping + persistence
@@ -1544,32 +1554,22 @@ export default function AdminDashboard() {
                     Configure which business types the discovery engine searches for. Enable or disable types, and add custom keywords to narrow results. Changes take effect on the next scan.
                   </p>
                   <p className="text-sm text-indigo-600 mt-2 font-medium">
-                    {businessTypes.filter(bt => bt.enabled).length} of {businessTypes.length} business types enabled
+                    {businessTypes.filter(bt => bt.enabled).length} of {maxSelections} selections used
+                    {purchaseInfo.extraSelections > 0 && <span className="text-gray-500 font-normal"> ({5} base + {purchaseInfo.extraSelections} extra)</span>}
                   </p>
+                  {businessTypes.filter(bt => bt.enabled).length >= maxSelections && (
+                    <Link to="/pricing?action=add-selections" className="text-xs text-indigo-600 hover:text-indigo-700 font-medium mt-1 inline-block">
+                      Buy more selections &rarr;
+                    </Link>
+                  )}
                 </div>
-
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6">
-                <p className="text-sm text-amber-900 font-medium mb-2">Google Maps API Key Setup</p>
-                <p className="text-xs text-amber-800 mb-2">
-                  The engine uses the Google Places API to find <strong>real businesses</strong> with <strong>real websites</strong>, then scrapes those websites for <strong>real emails</strong>. Without an API key, lead discovery will not work.
-                </p>
-                <ol className="list-decimal list-inside text-xs text-amber-800 space-y-1">
-                  <li>Go to <a href="https://console.cloud.google.com" target="_blank" className="underline font-medium">console.cloud.google.com</a></li>
-                  <li>Create a project (or use an existing one)</li>
-                  <li>Enable <strong>"Places API"</strong> and <strong>"Maps JavaScript API"</strong></li>
-                  <li>Create an API key (restrict to these two APIs)</li>
-                  <li>Go to <strong>Supabase Dashboard &gt; Edge Functions &gt; Settings</strong></li>
-                  <li>Add secret: <code className="bg-amber-100 px-1 rounded">GOOGLE_MAPS_API_KEY</code> = your key</li>
-                </ol>
-              </div>
-
-                <button
-                  onClick={addBusinessType}
-                  className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-indigo-700 transition-colors"
+                <Link
+                  to="/pricing?action=add-selections"
+                  className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-indigo-700 transition-colors whitespace-nowrap"
                 >
                   <Plus className="w-5 h-5" />
                   Add Business Type
-                </button>
+                </Link>
               </div>
 
               <div className="space-y-4">
@@ -1953,17 +1953,6 @@ export default function AdminDashboard() {
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                   />
                   <p className="text-xs text-gray-500 mt-1">This name appears as the sender in all outreach emails</p>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Google Maps API Key</label>
-                  <input
-                    type="password"
-                    value={settings.googleMapsApiKey}
-                    onChange={(e) => setSettings({ ...settings, googleMapsApiKey: e.target.value })}
-                    placeholder="AIza..."
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent font-mono text-sm"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">Used by all users for real business discovery via Google Places API</p>
                 </div>
               </div>
 
