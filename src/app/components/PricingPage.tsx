@@ -389,6 +389,21 @@ export default function PricingPage() {
       localStorage.setItem('vendlocate_purchases', JSON.stringify(purchases));
       localStorage.setItem('vendlocate_saved_location', JSON.stringify(locationData));
 
+      // Save selected business types to search settings immediately
+      const allTypes = BUSINESS_TYPES.map(bt => ({
+        id: bt.id,
+        name: bt.name,
+        requiredKeywords: [...(bt.requiredKeywords || [])],
+        optionalKeywords: [...(bt.optionalKeywords || [])],
+        enabled: selectedBusinessTypes.includes(bt.id),
+      }));
+      const existingSearchSettings = JSON.parse(localStorage.getItem('vendlocate_search_settings') || '{}');
+      localStorage.setItem('vendlocate_search_settings', JSON.stringify({
+        ...existingSearchSettings,
+        enabledBusinessTypes: allTypes.filter(t => t.enabled).map(t => t.name),
+        businessTypes: allTypes,
+      }));
+
       try {
         await apiCall('/user-location', {
           method: 'POST',

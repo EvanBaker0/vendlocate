@@ -129,60 +129,60 @@ export default function AdminDashboard() {
 
   const [businessTypes, setBusinessTypes] = useState<BusinessType[]>([
     {
-      id: '1',
-      name: 'Laundromat',
+      id: 'laundromat',
+      name: 'Laundromats',
       requiredKeywords: ['laundry', 'laundromat'],
       optionalKeywords: ['wash', 'dry', 'clean'],
       enabled: true,
     },
     {
-      id: '2',
+      id: 'auto-shops',
       name: 'Auto Shops',
       requiredKeywords: ['car', 'auto'],
       optionalKeywords: ['repair', 'tire', 'service', 'mechanic'],
       enabled: true,
     },
     {
-      id: '3',
+      id: 'apartments',
       name: 'Apartments',
       requiredKeywords: ['apartment', 'apartments'],
       optionalKeywords: ['complex', 'housing', 'residential'],
       enabled: true,
     },
     {
-      id: '4',
+      id: 'hotels',
       name: 'Hotels',
       requiredKeywords: ['hotel', 'motel'],
       optionalKeywords: ['inn', 'lodge', 'resort'],
       enabled: true,
     },
     {
-      id: '5',
+      id: 'senior-communities',
       name: 'Senior Communities',
       requiredKeywords: ['senior', 'retirement'],
       optionalKeywords: ['assisted living', 'nursing home', 'care'],
       enabled: true,
     },
     {
-      id: '6',
+      id: 'hospitals',
       name: 'Hospitals',
       requiredKeywords: ['hospital', 'medical center'],
       optionalKeywords: ['health', 'clinic'],
-      enabled: true,
+      enabled: false,
     },
     {
-      id: '7',
+      id: 'urgent-cares',
       name: 'Urgent Cares',
       requiredKeywords: ['urgent care'],
       optionalKeywords: ['walk-in', 'immediate care'],
-      enabled: true,
+      enabled: false,
     },
     {
-      id: '8',
+      id: 'pet-hospitals',
       name: 'Pet Hospitals',
       requiredKeywords: ['veterinary', 'vet', 'animal hospital'],
       optionalKeywords: ['pet clinic', 'animal care'],
-      enabled: true,
+      enabled: false,
     },
   ]);
 
@@ -243,6 +243,10 @@ export default function AdminDashboard() {
       const purchases = JSON.parse(localStorage.getItem('vendlocate_purchases') || '[]');
       const localPurchase = user ? purchases.find((p: any) => p.userId === user.id) : null;
 
+      if (localPurchase) {
+        setPurchaseInfo({extraSelections: localPurchase.extraSelections || 0, premiumTypes: localPurchase.premiumTypes || []});
+      }
+
       try {
         const response = await apiCall('/purchases');
         setHasPaid(!!localPurchase || (response.purchases || []).length > 0);
@@ -267,6 +271,12 @@ export default function AdminDashboard() {
         if (parsed.businessTypes && Array.isArray(parsed.businessTypes) && parsed.businessTypes.length > 0) {
           setBusinessTypes(parsed.businessTypes);
         }
+      } else if (localPurchase?.businessTypes?.length) {
+        // Fallback: restore business types from purchase data
+        setBusinessTypes(prev => prev.map(bt => ({
+          ...bt,
+          enabled: localPurchase.businessTypes.includes(bt.id),
+        })));
       }
 
       try {
