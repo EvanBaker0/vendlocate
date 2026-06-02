@@ -779,8 +779,14 @@ export default function AdminDashboard() {
       }
 
       addTerminalLine(`Total businesses discovered from Google: ${discoveredPlaces.length}`);
-    } else {
-      addTerminalLine('No Google Maps API key configured. Using free OpenStreetMap data.');
+
+      // If Google got zero results despite having a key, fall back to OSM
+      if (discoveredPlaces.length === 0) {
+        addTerminalLine('Google Places returned no results. Falling back to OpenStreetMap...');
+      }
+    }
+
+    if (discoveredPlaces.length === 0) {
       addTerminalLine('Querying OpenStreetMap for businesses...');
       const seenOsmIds = new Set<string>();
       const radiusMeters = currentRadiusMiles * 1609.34;
