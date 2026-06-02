@@ -52,15 +52,38 @@ export const apiCall = async (endpoint: string, options: RequestInit = {}) => {
   }
 };
 
+function getLocalUserId(): string | null {
+  try {
+    const raw = localStorage.getItem('vendlocate_current_user');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed?.id || null;
+  } catch {
+    return null;
+  }
+}
+
+function getLocalUserEmail(): string | null {
+  try {
+    const raw = localStorage.getItem('vendlocate_current_user');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed?.email || null;
+  } catch {
+    return null;
+  }
+}
+
 async function directSupabaseCall(endpoint: string, options: RequestInit = {}) {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('Not authenticated');
+  const { data: { user: authUser } } = await supabase.auth.getUser();
+  const userId = authUser?.id || getLocalUserId();
+  if (!userId) throw new Error('Not authenticated');
 
   if (endpoint === '/leads' && (!options.method || options.method === 'GET')) {
     const { data, error } = await supabase
       .from('leads')
       .select('*')
-      .eq('user_id', user.id)
+      .eq('user_id', userId)
       .order('ranking', { ascending: false });
     if (error) throw error;
     return { leads: data || [] };
@@ -70,7 +93,7 @@ async function directSupabaseCall(endpoint: string, options: RequestInit = {}) {
     const { data, error } = await supabase
       .from('purchases')
       .select('*')
-      .eq('user_id', user.id)
+      .eq('user_id', userId)
       .order('purchase_date', { ascending: false });
     if (error) throw error;
     return { purchases: data || [] };
@@ -80,13 +103,13 @@ async function directSupabaseCall(endpoint: string, options: RequestInit = {}) {
     const { data, error } = await supabase
       .from('user_locations')
       .select('*')
-      .eq('user_id', user.id)
+      .eq('user_id', userId)
       .order('created_at', { ascending: true });
     if (error) throw error;
     const { data: profile } = await supabase
       .from('users')
       .select('location_locked')
-      .eq('id', user.id)
+      .eq('id', userId)
       .single();
     return { locations: data || [], locationLocked: profile?.location_locked || false };
   }
@@ -95,7 +118,7 @@ async function directSupabaseCall(endpoint: string, options: RequestInit = {}) {
     const { data, error } = await supabase
       .from('email_history')
       .select('*')
-      .eq('user_id', user.id)
+      .eq('user_id', userId)
       .order('sent_at', { ascending: false });
     if (error) throw error;
     return { emails: data || [] };
@@ -113,20 +136,20 @@ async function directSupabaseCall(endpoint: string, options: RequestInit = {}) {
         preferred_radius_miles: body.preferredRadius || null,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', user.id);
+      .eq('id', userId);
     if (error) throw error;
 
     const { data: existingLoc } = await supabase
       .from('user_locations')
       .select('id')
-      .eq('user_id', user.id)
+      .eq('user_id', userId)
       .eq('is_primary', true)
       .limit(1)
       .maybeSingle();
 
     if (!existingLoc && body.location?.city) {
       await supabase.from('user_locations').insert({
-        user_id: user.id,
+        user_id: userId,
         label: `${body.location.city}, ${body.location.state}`,
         address: body.location.address || '',
         city: body.location.city || '',
@@ -154,7 +177,7 @@ async function directSupabaseCall(endpoint: string, options: RequestInit = {}) {
     const { data, error } = await supabase
       .from('users')
       .select('search_address, search_city, search_state, search_zip, preferred_radius_miles')
-      .eq('id', user.id)
+      .eq('id', userId)
       .single();
     if (error) throw error;
     return {
@@ -174,14 +197,14 @@ async function directSupabaseCall(endpoint: string, options: RequestInit = {}) {
       .from('users')
       .update({
         phone: body.phone || null,
-        outreach_email: body.outreachEmail || user.email,
+        outreach_email: body.outreachEmail || getLocalUserEmail() || '',
         smtp_app_password: body.smtpAppPassword || null,
         sender_name: body.senderName || null,
         email_template: body.emailTemplate || null,
         google_maps_api_key: body.googleMapsApiKey || null,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', user.id);
+      .eq('id', userId);
     if (error) throw error;
     return { success: true };
   }
@@ -190,13 +213,13 @@ async function directSupabaseCall(endpoint: string, options: RequestInit = {}) {
     const { data, error } = await supabase
       .from('users')
       .select('phone, outreach_email, smtp_app_password, sender_name, email_template, google_maps_api_key')
-      .eq('id', user.id)
+      .eq('id', userId)
       .single();
     if (error) throw error;
     return {
       settings: {
         phone: data?.phone || '',
-        outreachEmail: data?.outreach_email || user.email || '',
+        outreachEmail: data?.outreach_email || getLocalUserEmail() || '',
         smtpAppPassword: data?.smtp_app_password || '',
         senderName: data?.sender_name || 'Evan',
         emailTemplate: data?.email_template || '',
@@ -213,7 +236,7 @@ async function directSupabaseCall(endpoint: string, options: RequestInit = {}) {
         preferred_radius_miles: body.radiusMeters ? Math.round(body.radiusMeters / 1609.34) : undefined,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', user.id);
+      .eq('id', userId);
     if (error) throw error;
     return { success: true };
   }
@@ -222,7 +245,7 @@ async function directSupabaseCall(endpoint: string, options: RequestInit = {}) {
     const { data } = await supabase
       .from('users')
       .select('preferred_radius_miles, search_city, search_state')
-      .eq('id', user.id)
+      .eq('id', userId)
       .single();
     return {
       settings: {
@@ -238,20 +261,20 @@ async function directSupabaseCall(endpoint: string, options: RequestInit = {}) {
     const { data: profile } = await supabase
       .from('users')
       .select('search_address, search_city, search_state, search_zip, preferred_radius_miles')
-      .eq('id', user.id)
+      .eq('id', userId)
       .single();
 
     const { data: existingLoc } = await supabase
       .from('user_locations')
       .select('id')
-      .eq('user_id', user.id)
+      .eq('user_id', userId)
       .eq('is_primary', true)
       .limit(1)
       .maybeSingle();
 
     if (!existingLoc && profile && (profile.search_address || profile.search_city)) {
       await supabase.from('user_locations').insert({
-        user_id: user.id,
+        user_id: userId,
         label: profile.search_city ? `${profile.search_city}, ${profile.search_state}` : profile.search_address,
         address: profile.search_address || '',
         city: profile.search_city || '',
@@ -266,14 +289,14 @@ async function directSupabaseCall(endpoint: string, options: RequestInit = {}) {
       await supabase.from('user_locations').update({ locked: true, locked_at: now }).eq('id', existingLoc.id);
     }
 
-    await supabase.from('users').update({ location_locked: true, location_locked_at: now }).eq('id', user.id);
+    await supabase.from('users').update({ location_locked: true, location_locked_at: now }).eq('id', userId);
     return { success: true };
   }
 
   if (endpoint === '/user-locations/unlock' && options.method === 'POST') {
     const body = JSON.parse(options.body as string);
     const { error } = await supabase.from('user_locations').insert({
-      user_id: user.id,
+      user_id: userId,
       label: body.city ? `${body.city}, ${body.state}` : body.address,
       address: body.address,
       city: body.city,
@@ -290,7 +313,7 @@ async function directSupabaseCall(endpoint: string, options: RequestInit = {}) {
   if (endpoint === '/create-payment-intent' && options.method === 'POST') {
     const body = JSON.parse(options.body as string);
     const { data, error } = await supabase.from('purchases').insert({
-      user_id: user.id,
+      user_id: userId,
       radius_miles: body.radius,
       business_types: body.businessTypes || [],
       extra_selections: body.extraSelections || 0,
@@ -314,7 +337,7 @@ async function directSupabaseCall(endpoint: string, options: RequestInit = {}) {
     const { data: purchase } = await supabase
       .from('purchases')
       .select('id')
-      .eq('user_id', user.id)
+      .eq('user_id', userId)
       .eq('status', 'active')
       .order('purchase_date', { ascending: false })
       .limit(1)
@@ -325,7 +348,7 @@ async function directSupabaseCall(endpoint: string, options: RequestInit = {}) {
     const { data: loc } = await supabase
       .from('user_locations')
       .select('id')
-      .eq('user_id', user.id)
+      .eq('user_id', userId)
       .eq('is_primary', true)
       .limit(1)
       .maybeSingle();
@@ -334,7 +357,7 @@ async function directSupabaseCall(endpoint: string, options: RequestInit = {}) {
     if (places.length > 0) {
       const leadRows = places.map((p: any) => ({
         purchase_id: purchase.id,
-        user_id: user.id,
+        user_id: userId,
         user_location_id: loc?.id || null,
         business_name: p.business_name || p.name || 'Unknown',
         business_type: p.business_type || 'General',
@@ -361,7 +384,7 @@ async function directSupabaseCall(endpoint: string, options: RequestInit = {}) {
     const { data: allLeads } = await supabase
       .from('leads')
       .select('*')
-      .eq('user_id', user.id);
+      .eq('user_id', userId);
 
     return {
       leads: allLeads || [],

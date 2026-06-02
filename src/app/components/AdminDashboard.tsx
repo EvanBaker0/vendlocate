@@ -781,6 +781,55 @@ export default function AdminDashboard() {
       addTerminalLine(`Total businesses discovered from Google: ${discoveredPlaces.length}`);
     } else {
       addTerminalLine('No Google Maps API key configured. Using free OpenStreetMap data (fewer websites).');
+      // Overpass API browser search fallback
+      addTerminalLine('Querying OpenStreetMap for businesses...');
+      const radiusDeg = currentRadiusMiles / 69;
+      const bbox = `${lng - radiusDeg},${lat - radiusDeg},${lng + radiusDeg},${lat + radiusDeg}`;
+      const seenOsmIds = new Set<string>();
+      for (const bt of enabledTypes) {
+        const tags = ['shop', 'amenity', 'office', 'leisure', 'building'];
+        for (const tag of tags) {
+          if (discoveredPlaces.length >= 800) break;
+          try {
+            const query = `[out:json];(node["${tag}"](around:${currentRadiusMiles * 1609.34},${lat},${lng});way["${tag}"](around:${currentRadiusMiles * 1609.34},${lat},${lng}););out center ${Math.min(50, 800 - discoveredPlaces.length)};`;
+            const resp = await fetch('https://overpass-api.de/api/interpreter', {
+              method: 'POST',
+              body: query,
+            });
+            const data = await resp.json();
+            for (const el of data.elements || []) {
+              if (discoveredPlaces.length >= 800) break;
+              const id = `${el.type}/${el.id}`;
+              if (seenOsmIds.has(id)) continue;
+              seenOsmIds.add(id);
+              const elLat = el.lat || el.center?.lat || lat;
+              const elLng = el.lon || el.center?.lon || lng;
+              const name = el.tags?.name || el.tags?.['operator'] || 'Unknown';
+              const elKeywords = [...(bt.requiredKeywords || []), ...(bt.optionalKeywords || [])];
+              const nameLower = name.toLowerCase();
+              const matchesKeyword = elKeywords.length === 0 || elKeywords.some(k => nameLower.includes(k.toLowerCase()));
+              if (!matchesKeyword) continue;
+              discoveredPlaces.push({
+                business_name: name,
+                business_type: bt.name || 'General',
+                address: [el.tags?.['addr:housenumber'] || '', el.tags?.['addr:street'] || '', el.tags?.['addr:city'] || '', el.tags?.['addr:postcode'] || ''].filter(Boolean).join(', ') || `${elLat.toFixed(4)}, ${elLng.toFixed(4)}`,
+                city: editLocation.city || '',
+                state: editLocation.state || '',
+                website: el.tags?.website || el.tags?.contactwebsite || null,
+                phone: el.tags?.phone || el.tags?.['contact:phone'] || null,
+                place_id: `osm_${id}`,
+                lat: elLat,
+                lng: elLng,
+                distance: parseFloat((currentRadiusMiles * Math.sqrt(((elLng - lng) * Math.cos((lat + elLat) / 2 * Math.PI / 180)) ** 2 + (elLat - lat) ** 2) / radiusDeg).toFixed(1)),
+              });
+            }
+          } catch {
+            addTerminalLine(`  ⚠ OSM search error for tag "${tag}"`);
+          }
+        }
+        await delay(100);
+      }
+      addTerminalLine(`Total businesses discovered from OpenStreetMap: ${discoveredPlaces.length}`);
     }
 
     // Send discovered places to engine for email scraping + persistence
