@@ -1585,15 +1585,19 @@ export default function AdminDashboard() {
                         />
                       </div>
                       <div className="flex items-center gap-2">
-                        <label className="flex items-center gap-2 cursor-pointer">
+                        <label className={`flex items-center gap-2 ${!bt.enabled && businessTypes.filter(b => b.enabled).length >= maxSelections ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
                           <input
                             type="checkbox"
                             checked={bt.enabled}
+                            disabled={!bt.enabled && businessTypes.filter(b => b.enabled).length >= maxSelections}
                             onChange={(e) => updateBusinessType(bt.id, { enabled: e.target.checked })}
                             className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500"
                           />
                           <span className="text-sm text-gray-700">Include in Search</span>
                         </label>
+                        {!bt.enabled && businessTypes.filter(b => b.enabled).length >= maxSelections && (
+                          <span className="text-xs text-amber-600">Selections full</span>
+                        )}
                         <button
                           onClick={() => deleteBusinessType(bt.id)}
                           className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
