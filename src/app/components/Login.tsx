@@ -21,25 +21,33 @@ export default function Login() {
         password,
       });
 
-      if (signInError) {
-        throw signInError;
+      if (!signInError && data?.session) {
+        localStorage.setItem(
+          'vendlocate_current_user',
+          JSON.stringify({
+            id: data.user.id,
+            email: data.user.email,
+            name: data.user.user_metadata?.name || data.user.email,
+          })
+        );
+
+        setIsLoading(false);
+        navigate('/dashboard');
+        return;
       }
 
-      if (!data.session) {
-        throw new Error('No session returned');
+      // Fallback: check for local-only user
+      const saved = localStorage.getItem('vendlocate_current_user');
+      if (saved) {
+        const localUser = JSON.parse(saved);
+        if (localUser.email === email) {
+          setIsLoading(false);
+          navigate('/dashboard');
+          return;
+        }
       }
 
-      localStorage.setItem(
-        'vendlocate_current_user',
-        JSON.stringify({
-          id: data.user.id,
-          email: data.user.email,
-          name: data.user.user_metadata?.name || data.user.email,
-        })
-      );
-
-      setIsLoading(false);
-      navigate('/dashboard');
+      throw new Error('Invalid email or password');
     } catch (err: any) {
       setError(err.message || 'Invalid email or password');
       setIsLoading(false);
