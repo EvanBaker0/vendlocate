@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router';
-import { apiCall, supabase } from '../utils/supabase';
+import { apiCall, supabase, VERCEL_API_URL } from '../utils/supabase';
+import { discoverBusinessesByType } from '../utils/osmDiscovery';
 import {
   MapPin,
   Mail,
@@ -611,16 +612,18 @@ export default function AdminDashboard() {
     }
     await delay(200);
 
-    // ── Phase 3: DISCOVERY (Google Places via browser + email scraping on server) ──
+    // ── Phase 3: DISCOVERY (OpenStreetMap tag-based, no API key required) ──
     addTerminalLine('--- PHASE 3: DISCOVERY ---');
     addTerminalLine(`Searching within ${currentRadiusMiles} miles of ${editLocation.city || 'your location'}...`);
     const enabledTypes = businessTypes.filter(bt => bt.enabled);
     addTerminalLine(`Enabled types: ${enabledTypes.map(bt => bt.name).join(', ')}`);
     await delay(100);
 
-    // Calculate estimated time
-    const totalKeywords = enabledTypes.reduce((sum, bt) => sum + (bt.requiredKeywords?.length || 0) + (bt.optionalKeywords?.length || 0), 0);
-    const estSeconds = Math.max(30, Math.ceil(totalKeywords * 8 + currentRadiusMiles * 0.8));
+    const totalKeywords = enabledTypes.reduce(
+      (sum, bt) => sum + (bt.requiredKeywords?.length || 0) + (bt.optionalKeywords?.length || 0),
+      0
+    );
+    const estSeconds = Math.max(45, Math.ceil(totalKeywords * 5 + currentRadiusMiles * 0.6));
     const estMin = Math.floor(estSeconds / 60);
     const estSec = estSeconds % 60;
     addTerminalLine(`Estimated time: ${estMin > 0 ? `${estMin}m ` : ''}${estSec}s`);
@@ -629,226 +632,95 @@ export default function AdminDashboard() {
 
     let engineResult: any = null;
     const discoveredPlaces: any[] = [];
+    const seenOsmIds = new Set<string>();
+    const radiusMeters = currentRadiusMiles * 1609.34;
 
-    // ── Browser-based Google Places API calls ──
-    const googleApiKey = settings.googleMapsApiKey || '';
-    if (googleApiKey) {
-      addTerminalLine('Discovering businesses via Google Maps (browser)...');
-      const radiusMeters = currentRadiusMiles * 1609.34;
-      const seenPlaceIds = new Set<string>();
-
-      for (const bt of enabledTypes) {
-        const rawKeywords = [...(bt.requiredKeywords || []), ...(bt.optionalKeywords || [])];
-        const keywords = rawKeywords.filter((k, i) => k && rawKeywords.indexOf(k) === i).slice(0, 8);
-        for (const keyword of keywords) {
-          if (discoveredPlaces.length >= 800) break;
-          addTerminalLine(`  Searching "${keyword}"...`);
-
-          // Nearby search with pagination
-          let nextPageToken: string | null = null;
-          for (let page = 0; page < 3; page++) {
-            if (discoveredPlaces.length >= 800) break;
-            try {
-              let searchUrl: string;
-              if (page === 0) {
-                searchUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${radiusMeters}&keyword=${encodeURIComponent(keyword)}&key=${googleApiKey}`;
-              } else if (nextPageToken) {
-                await delay(2000);
-                searchUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?pagetoken=${nextPageToken}&key=${googleApiKey}`;
-              } else break;
-
-              const resp = await fetch(searchUrl);
-              const data = await resp.json();
-              if (data.status === 'REQUEST_DENIED') {
-                addTerminalLine(`  ⚠ Google Places denied: ${data.error_message || 'check API key restrictions'}`);
-                addTerminalLine('  Falling back to free OpenStreetMap data...');
-                break;
-              }
-
-              const places = data.results || [];
-              nextPageToken = data.next_page_token || null;
-
-              for (const place of places) {
-                if (discoveredPlaces.length >= 800) break;
-                if (!place.place_id || seenPlaceIds.has(place.place_id)) continue;
-                seenPlaceIds.add(place.place_id);
-
-                let website: string | null = null;
-                let phone: string | null = null;
-                let addr: string | null = place.vicinity || null;
-                let pName: string = place.name;
-
-                try {
-                  const detailUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${place.place_id}&fields=name,website,formatted_phone_number,formatted_address,url&key=${googleApiKey}`;
-                  const dResp = await fetch(detailUrl);
-                  const dData = await dResp.json();
-                  const r = dData.result || {};
-                  website = r.website || null;
-                  phone = r.formatted_phone_number || null;
-                  addr = r.formatted_address || addr;
-                  pName = r.name || pName;
-                } catch {}
-
-                const R = 3959;
-                const pLat = place.geometry?.location?.lat || lat;
-                const pLng = place.geometry?.location?.lng || lng;
-                const dLat = (lat - pLat) * Math.PI / 180;
-                const dLng = (lng - pLng) * Math.PI / 180;
-                const a = Math.sin(dLat / 2) ** 2 +
-                  Math.cos(lat * Math.PI / 180) * Math.cos(pLat * Math.PI / 180) *
-                  Math.sin(dLng / 2) ** 2;
-                const dist = parseFloat((R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))).toFixed(1));
-
-                discoveredPlaces.push({
-                  business_name: pName,
-                  business_type: bt.name || 'General',
-                  address: addr || '',
-                  city: editLocation.city || '',
-                  state: editLocation.state || '',
-                  website: website,
-                  phone: phone,
-                  place_id: place.place_id,
-                  lat: pLat,
-                  lng: pLng,
-                  distance: dist,
-                });
-              }
-
-              if (!nextPageToken) break;
-            } catch (e) {
-              addTerminalLine(`  ⚠ Error searching "${keyword}" page ${page}: ${(e as any)?.message || 'network error'}`);
-              break;
-            }
-          }
-
-          // Text search for broader results
-          if (discoveredPlaces.length < 800) {
-            try {
-              const textUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(keyword + ' near ' + (editLocation.city || ''))}&location=${lat},${lng}&radius=${radiusMeters}&key=${googleApiKey}`;
-              const tResp = await fetch(textUrl);
-              const tData = await tResp.json();
-              for (const place of tData.results || []) {
-                if (discoveredPlaces.length >= 800) break;
-                if (!place.place_id || seenPlaceIds.has(place.place_id)) continue;
-                seenPlaceIds.add(place.place_id);
-
-                let website: string | null = null;
-                let phone: string | null = null;
-                let addr: string | null = place.formatted_address || null;
-                let pName: string = place.name;
-
-                try {
-                  const detailUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${place.place_id}&fields=name,website,formatted_phone_number,formatted_address,url&key=${googleApiKey}`;
-                  const dResp = await fetch(detailUrl);
-                  const dData = await dResp.json();
-                  const r = dData.result || {};
-                  website = r.website || null;
-                  phone = r.formatted_phone_number || null;
-                  addr = r.formatted_address || addr;
-                  pName = r.name || pName;
-                } catch {}
-
-                const R = 3959;
-                const pLat = place.geometry?.location?.lat || lat;
-                const pLng = place.geometry?.location?.lng || lng;
-                const dLat = (lat - pLat) * Math.PI / 180;
-                const dLng = (lng - pLng) * Math.PI / 180;
-                const a = Math.sin(dLat / 2) ** 2 +
-                  Math.cos(lat * Math.PI / 180) * Math.cos(pLat * Math.PI / 180) *
-                  Math.sin(dLng / 2) ** 2;
-                const dist = parseFloat((R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))).toFixed(1));
-
-                discoveredPlaces.push({
-                  business_name: pName,
-                  business_type: bt.name || 'General',
-                  address: addr || '',
-                  city: editLocation.city || '',
-                  state: editLocation.state || '',
-                  website: website,
-                  phone: phone,
-                  place_id: place.place_id,
-                  lat: pLat,
-                  lng: pLng,
-                  distance: dist,
-                });
-              }
-            } catch {}
-          }
-          await delay(50);
+    addTerminalLine('Discovering businesses via OpenStreetMap (tag-based, no API key)...');
+    for (const bt of enabledTypes) {
+      if (discoveredPlaces.length >= 5000) break;
+      addTerminalLine(`  Searching OSM for "${bt.name}"...`);
+      try {
+        const places = await discoverBusinessesByType({
+          businessType: bt,
+          lat,
+          lng,
+          radiusMeters,
+          centerCity: editLocation.city,
+          centerState: editLocation.state,
+          perTypeLimit: 1500,
+        });
+        let added = 0;
+        for (const p of places) {
+          if (discoveredPlaces.length >= 5000) break;
+          if (!p.place_id || seenOsmIds.has(p.place_id)) continue;
+          seenOsmIds.add(p.place_id);
+          discoveredPlaces.push({
+            business_name: p.business_name,
+            business_type: bt.name || 'General',
+            address: p.address || '',
+            city: p.city || editLocation.city || '',
+            state: p.state || editLocation.state || '',
+            website: p.website || null,
+            phone: p.phone || null,
+            place_id: p.place_id,
+            lat: p.lat,
+            lng: p.lng,
+            distance: p.distance || 0,
+          });
+          added += 1;
         }
+        addTerminalLine(`    +${added} unique ${bt.name} businesses`);
+      } catch (e: any) {
+        addTerminalLine(`  ⚠ OSM search error for "${bt.name}": ${e?.message || 'unknown'}`);
       }
-
-      addTerminalLine(`Total businesses discovered from Google: ${discoveredPlaces.length}`);
-
-      // If Google got zero results despite having a key, fall back to OSM
-      if (discoveredPlaces.length === 0) {
-        addTerminalLine('Google Places returned no results. Falling back to OpenStreetMap...');
-      }
+      await delay(150);
     }
 
-    if (discoveredPlaces.length === 0) {
-      addTerminalLine('Querying OpenStreetMap for businesses...');
-      const seenOsmIds = new Set<string>();
-      const radiusMeters = currentRadiusMiles * 1609.34;
-      for (const bt of enabledTypes) {
-        if (discoveredPlaces.length >= 800) break;
-        const elKeywords = [...(bt.requiredKeywords || []), ...(bt.optionalKeywords || [])];
-        addTerminalLine(`  Searching OSM for "${bt.name}"...`);
-        const namePattern = elKeywords.map(k => `.*${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*`).join('|');
-        if (namePattern) {
-          try {
-            const query = `[out:json][maxsize:1048576];(node(around:${radiusMeters},${lat},${lng})[~"^name$"~"${namePattern}",i];way(around:${radiusMeters},${lat},${lng})[~"^name$"~"${namePattern}",i];);out center 300;`;
-            const resp = await fetch('https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query));
-            if (!resp.ok) { addTerminalLine(`  ⚠ OSM HTTP ${resp.status}`); continue; }
-            const data = await resp.json();
-            for (const el of data.elements || []) {
-              if (discoveredPlaces.length >= 800) break;
-              if (seenOsmIds.has(`${el.type}/${el.id}`)) continue;
-              seenOsmIds.add(`${el.type}/${el.id}`);
-              const elLat = el.lat || el.center?.lat || lat;
-              const elLng = el.lon || el.center?.lon || lng;
-              const name = el.tags?.name || el.tags?.['operator'] || 'Unknown';
-              if (elKeywords.length > 0 && !elKeywords.some(k => name.toLowerCase().includes(k.toLowerCase()))) continue;
-              discoveredPlaces.push({
-                business_name: name, business_type: bt.name || 'General',
-                address: [el.tags?.['addr:housenumber'] || '', el.tags?.['addr:street'] || '', el.tags?.['addr:city'] || '', el.tags?.['addr:postcode'] || ''].filter(Boolean).join(', ') || `${elLat.toFixed(4)}, ${elLng.toFixed(4)}`,
-                city: editLocation.city || '', state: editLocation.state || '',
-                website: el.tags?.website || el.tags?.contactwebsite || null,
-                phone: el.tags?.phone || el.tags?.['contact:phone'] || null,
-                place_id: `osm_${el.type}/${el.id}`, lat: elLat, lng: elLng,
-                distance: parseFloat((3959 * 2 * Math.atan2(Math.sqrt(Math.sin((lat - elLat) * Math.PI / 360) ** 2 + Math.cos(lat * Math.PI / 180) * Math.cos(elLat * Math.PI / 180) * Math.sin((lng - elLng) * Math.PI / 360) ** 2), Math.sqrt(1 - (Math.sin((lat - elLat) * Math.PI / 360) ** 2 + Math.cos(lat * Math.PI / 180) * Math.cos(elLat * Math.PI / 180) * Math.sin((lng - elLng) * Math.PI / 360) ** 2)))).toFixed(1)),
-              });
-            }
-            addTerminalLine(`    +${(data.elements || []).length} OSM name matches`);
-          } catch (e: any) {
-            addTerminalLine(`  ⚠ OSM name search error: ${e?.message || 'network error'}`);
-          }
-          await delay(300);
-        }
-      }
-      addTerminalLine(`Total businesses discovered from OpenStreetMap: ${discoveredPlaces.length}`);
-    }
+    addTerminalLine(`Total businesses discovered from OpenStreetMap: ${discoveredPlaces.length}`);
 
     // Send discovered places to engine for email scraping + persistence
     addTerminalLine('');
     addTerminalLine('Sending to engine for website email scraping...');
     try {
-      engineResult = await apiCall('/generate-leads', {
-        method: 'POST',
-        body: JSON.stringify({
-          places: discoveredPlaces,
-          location: { lat, lng, city: editLocation.city, state: editLocation.state, phone: settings.phone },
-          radiusMiles: currentRadiusMiles,
-          businessTypes: enabledTypes.map(bt => ({
-            name: bt.name,
-            requiredKeywords: bt.requiredKeywords,
-            optionalKeywords: bt.optionalKeywords,
-            enabled: bt.enabled,
-          })),
-          senderName: settings.senderName || 'Evan',
-          emailTemplate: settings.emailTemplate || '',
-        }),
-      });
+      const payload = {
+        places: discoveredPlaces,
+        location: { lat, lng, city: editLocation.city, state: editLocation.state, phone: settings.phone },
+        radiusMiles: currentRadiusMiles,
+        businessTypes: enabledTypes.map(bt => ({
+          name: bt.name,
+          requiredKeywords: bt.requiredKeywords,
+          optionalKeywords: bt.optionalKeywords,
+          enabled: bt.enabled,
+        })),
+        senderName: settings.senderName || 'Evan',
+        emailTemplate: settings.emailTemplate || '',
+      };
+
+      try {
+        engineResult = await apiCall('/generate-leads', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+      } catch (primaryErr: any) {
+        addTerminalLine(`Primary engine unreachable, trying Vercel scan endpoint...`);
+        const authHeader =
+          (await supabase.auth.getSession()).data.session?.access_token || '';
+        const r = await fetch(`${VERCEL_API_URL}/scan`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(authHeader ? { Authorization: `Bearer ${authHeader}` } : {}),
+          },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(300000),
+        });
+        if (!r.ok) {
+          const errBody = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+          throw new Error(errBody.error || `Vercel scan HTTP ${r.status}`);
+        }
+        engineResult = await r.json();
+      }
+
       addTerminalLine(`Engine returned: ${engineResult.leadsFound || 0} businesses processed`);
       addTerminalLine(`Emails found: ${engineResult.emailsFound || 0}`);
       addTerminalLine(`Emails recorded: ${engineResult.emailsSent || 0}`);
@@ -964,23 +836,39 @@ export default function AdminDashboard() {
       .limit(1)
       .maybeSingle();
 
-    const leadRows = places.map((p: any) => ({
-      purchase_id: purchase.id,
-      user_id: localUserId,
-      user_location_id: loc?.id || null,
-      business_name: p.business_name || p.name || 'Unknown',
-      business_type: p.business_type || 'General',
-      address: p.address || '',
-      city: p.city || '',
-      state: p.state || '',
-      email: p.email || null,
-      phone: p.phone || null,
-      website: p.website || null,
-      has_website: !!p.website,
-      place_id: p.place_id || `web_${p.website || p.business_name}_${Math.random().toString(36).slice(2, 8)}`,
-      distance_from_client: p.distance || p.distance_from_client || 0,
-      status: 'no_email',
-    }));
+    const seenPids = new Set<string>();
+    const leadRows = places
+      .map((p: any) => {
+        const website = (p.website || '').toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
+        const name = (p.business_name || p.name || '').toLowerCase().trim();
+        const city = (p.city || '').toLowerCase().trim();
+        const pid =
+          p.place_id ||
+          (website && `web_${website}`) ||
+          (name && city && `nm_${name}_${city}`) ||
+          (name && `nm_${name}`) ||
+          null;
+        if (!pid || seenPids.has(pid)) return null;
+        seenPids.add(pid);
+        return {
+          purchase_id: purchase.id,
+          user_id: localUserId,
+          user_location_id: loc?.id || null,
+          business_name: p.business_name || p.name || 'Unknown',
+          business_type: p.business_type || 'General',
+          address: p.address || '',
+          city: p.city || '',
+          state: p.state || '',
+          email: p.email || null,
+          phone: p.phone || null,
+          website: p.website || null,
+          has_website: !!p.website,
+          place_id: pid,
+          distance_from_client: p.distance || p.distance_from_client || 0,
+          status: 'no_email',
+        };
+      })
+      .filter(Boolean);
 
     for (let i = 0; i < leadRows.length; i += 100) {
       const batch = leadRows.slice(i, i + 100);

@@ -7,6 +7,15 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 export const API_URL = `https://${supabaseUrl.split('//')[1].split('.')[0]}.supabase.co/functions/v1/make-server-de060722`;
 
+export const VERCEL_API_URL = (() => {
+  if (typeof window === 'undefined') return '/api';
+  const origin = window.location.origin;
+  if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+    return `${origin}/api`;
+  }
+  return '/api';
+})();
+
 export interface User {
   id: string;
   email: string;
@@ -26,17 +35,26 @@ export const getAuthHeader = async () => {
 
 export const apiCall = async (endpoint: string, options: RequestInit = {}) => {
   const authHeader = await getAuthHeader();
+  const isLongRunning =
+    endpoint === '/generate-leads' ||
+    endpoint === '/scan' ||
+    ((options.method || 'GET').toUpperCase() === 'POST' && endpoint.includes('scan'));
+  const timeoutMs = isLongRunning ? 300000 : 30000;
 
-  try {
-    const response = await fetch(`${API_URL}${endpoint}`, {
+  const fetchWithTimeout = async (url: string) => {
+    return fetch(url, {
       ...options,
       headers: {
         'Content-Type': 'application/json',
         ...(authHeader ? { Authorization: authHeader } : {}),
         ...options.headers,
       },
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
+  };
+
+  try {
+    const response = await fetchWithTimeout(`${API_URL}${endpoint}`);
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: 'Request failed' }));
@@ -45,12 +63,47 @@ export const apiCall = async (endpoint: string, options: RequestInit = {}) => {
 
     return response.json();
   } catch (err: any) {
-    if (err.name === 'TimeoutError' || err.message?.includes('Failed to fetch') || err.message?.includes('NetworkError')) {
-      return await directSupabaseCall(endpoint, options);
+    const isNetworkError =
+      err?.name === 'TimeoutError' ||
+      err?.name === 'AbortError' ||
+      err?.message?.includes('Failed to fetch') ||
+      err?.message?.includes('NetworkError') ||
+      err?.message?.includes('aborted') ||
+      err?.message?.includes('The user aborted');
+
+    if (isNetworkError) {
+      try {
+        if (endpoint === '/generate-leads' && (options.method || 'GET').toUpperCase() === 'POST') {
+          return await vercelScanCall(options);
+        }
+        return await directSupabaseCall(endpoint, options);
+      } catch (fallbackErr: any) {
+        throw new Error(
+          `Edge Function unreachable (${err?.message || 'Failed to fetch'}). Fallback also failed: ${fallbackErr?.message || 'unknown error'}`
+        );
+      }
     }
     throw err;
   }
 };
+
+async function vercelScanCall(options: RequestInit) {
+  const authHeader = await getAuthHeader();
+  const response = await fetch(`${VERCEL_API_URL}/scan`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(authHeader ? { Authorization: authHeader } : {}),
+      ...options.headers,
+    },
+    signal: AbortSignal.timeout(300000),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Scan API request failed' }));
+    throw new Error(error.error || `HTTP ${response.status}`);
+  }
+  return response.json();
+}
 
 function getLocalUserId(): string | null {
   try {
@@ -355,23 +408,39 @@ async function directSupabaseCall(endpoint: string, options: RequestInit = {}) {
 
     // Save discovered places as leads directly
     if (places.length > 0) {
-      const leadRows = places.map((p: any) => ({
-        purchase_id: purchase.id,
-        user_id: userId,
-        user_location_id: loc?.id || null,
-        business_name: p.business_name || p.name || 'Unknown',
-        business_type: p.business_type || 'General',
-        address: p.address || '',
-        city: p.city || '',
-        state: p.state || '',
-        email: p.email || null,
-        phone: p.phone || null,
-        website: p.website || null,
-        has_website: !!p.website,
-        place_id: p.place_id || `web_${p.website || p.business_name}_${Math.random().toString(36).slice(2, 8)}`,
-        distance_from_client: p.distance || p.distance_from_client || 0,
-        status: 'no_email',
-      }));
+      const seenPids = new Set<string>();
+      const leadRows = places
+        .map((p: any) => {
+          const website = (p.website || '').toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
+          const name = (p.business_name || p.name || '').toLowerCase().trim();
+          const city = (p.city || '').toLowerCase().trim();
+          const pid =
+            p.place_id ||
+            (website && `web_${website}`) ||
+            (name && city && `nm_${name}_${city}`) ||
+            (name && `nm_${name}`) ||
+            null;
+          if (!pid || seenPids.has(pid)) return null;
+          seenPids.add(pid);
+          return {
+            purchase_id: purchase.id,
+            user_id: userId,
+            user_location_id: loc?.id || null,
+            business_name: p.business_name || p.name || 'Unknown',
+            business_type: p.business_type || 'General',
+            address: p.address || '',
+            city: p.city || '',
+            state: p.state || '',
+            email: p.email || null,
+            phone: p.phone || null,
+            website: p.website || null,
+            has_website: !!p.website,
+            place_id: pid,
+            distance_from_client: p.distance || p.distance_from_client || 0,
+            status: 'no_email',
+          };
+        })
+        .filter(Boolean);
       for (let i = 0; i < leadRows.length; i += 100) {
         const batch = leadRows.slice(i, i + 100);
         await supabase.from('leads').upsert(batch, {
